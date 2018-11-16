@@ -7,10 +7,12 @@ using System.Linq;
 
 namespace fastJSON
 {
-    internal class DynamicJson : DynamicObject, IEnumerable
+    public class DynamicJson : DynamicObject, IEnumerable
     {
         private IDictionary<string, object> _dictionary { get; set; }
         private List<object> _list { get; set; }
+
+        public bool IsObject => this._dictionary != null;
 
         public DynamicJson(string json)
         {
@@ -22,10 +24,14 @@ namespace fastJSON
                 _list = (List<object>)parse;
         }
 
-        private DynamicJson(object dictionary)
+        internal DynamicJson(object collection)
         {
-            if (dictionary is IDictionary<string, object>)
-                _dictionary = (IDictionary<string, object>)dictionary;
+            if (collection is IDictionary<string, object>)
+                _dictionary = (IDictionary<string, object>)collection;
+            else if (collection is List<object>)
+                _list = (List<object>)collection;
+            else if (collection is object[])
+                _list = ((object[])collection).ToList();
         }
 
         public override IEnumerable<string> GetDynamicMemberNames()
@@ -81,6 +87,16 @@ namespace fastJSON
             {
                 yield return new DynamicJson(o as IDictionary<string, object>);
             }
+        }
+
+        internal IDictionary<string, object> AsDictionary()
+        {
+            return this._dictionary;
+        }
+
+        internal ICollection AsCollection()
+        {
+            return (ICollection)this._dictionary ?? this._list;
         }
     }
 }

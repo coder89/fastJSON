@@ -1,17 +1,40 @@
 ﻿using System;
 using System.Collections.Generic;
+#if !ENABLE_IL2CPP && !UNITY_WSA
 using System.Reflection.Emit;
+#endif
 using System.Reflection;
 using System.Collections;
 using System.Text;
 using System.Runtime.Serialization;
+#if NET4
+using System.Dynamic;
+#endif
 #if !SILVERLIGHT
 using System.Data;
+#endif
+
+#if UNITY_WSA
+using TypeR = System.Reflection.TypeInfo;
+#else
+using TypeR = System.Type;
 #endif
 using System.Collections.Specialized;
 
 namespace fastJSON
 {
+    internal static class TypeExtensions
+    {
+        public static TypeR Convert(this System.Type type)
+        {
+#if UNITY_WSA
+            return type.GetTypeInfo();
+#else
+            return type;
+#endif
+        }
+    }
+
     internal struct Getters
     {
         public string Name;
@@ -42,6 +65,9 @@ namespace fastJSON
         DataTable,
 #endif
         Custom,
+#if NET4
+        Dynamic,
+#endif
         Unknown,
     }
 
@@ -92,6 +118,7 @@ namespace fastJSON
         private SafeDictionary<string, Dictionary<string, myPropInfo>> _propertycache = new SafeDictionary<string, Dictionary<string, myPropInfo>>();
         private SafeDictionary<Type, Type[]> _genericTypes = new SafeDictionary<Type, Type[]>();
         private SafeDictionary<Type, Type> _genericTypeDef = new SafeDictionary<Type, Type>();
+#if !ENABLE_IL2CPP && !UNITY_WSA
         private static SafeDictionary<short, OpCode> _opCodes;
 
         private static bool TryGetOpCode(short code, out OpCode opCode)
@@ -109,6 +136,7 @@ namespace fastJSON
             _opCodes = dict;
             return _opCodes.TryGetValue(code, out opCode);
         }
+#endif
 
         #region bjson custom types
         internal UnicodeEncoding unicode = new UnicodeEncoding();
@@ -256,7 +284,7 @@ namespace fastJSON
             else if (t == typeof(string)) d_type = myPropInfoType.String;
             else if (t == typeof(bool) || t == typeof(bool?)) d_type = myPropInfoType.Bool;
             else if (t == typeof(DateTime) || t == typeof(DateTime?)) d_type = myPropInfoType.DateTime;
-            else if (t.IsEnum) d_type = myPropInfoType.Enum;
+            else if (t.Convert().IsEnum) d_type = myPropInfoType.Enum;
             else if (t == typeof(Guid) || t == typeof(Guid?)) d_type = myPropInfoType.Guid;
             else if (t == typeof(StringDictionary)) d_type = myPropInfoType.StringDictionary;
             else if (t == typeof(NameValueCollection)) d_type = myPropInfoType.NameValue;
@@ -283,14 +311,19 @@ namespace fastJSON
 #endif
             else if (IsTypeRegistered(t))
                 d_type = myPropInfoType.Custom;
+#if NET4
+            else if (t.IsAssignableFrom(typeof(DynamicJson)))
+                d_type = myPropInfoType.Dynamic;
+#endif
 
-            if (t.IsValueType && !t.IsPrimitive && !t.IsEnum && t != typeof(decimal))
+            var tr = t.Convert();
+            if (tr.IsValueType && !tr.IsPrimitive && !tr.IsEnum && t != typeof(decimal))
                 d.IsStruct = true;
 
-            d.IsInterface = t.IsInterface;
-            d.IsClass = t.IsClass;
-            d.IsValueType = t.IsValueType;
-            if (t.IsGenericType)
+            d.IsInterface = tr.IsInterface;
+            d.IsClass = tr.IsClass;
+            d.IsValueType = tr.IsValueType;
+            if (tr.IsGenericType)
             {
                 d.IsGenericType = true;
                 d.bt = t.GetGenericArguments()[0];
@@ -306,7 +339,7 @@ namespace fastJSON
 
         private Type GetChangeType(Type conversionType)
         {
-            if (conversionType.IsGenericType && conversionType.GetGenericTypeDefinition().Equals(typeof(Nullable<>)))
+            if (conversionType.Convert().IsGenericType && conversionType.GetGenericTypeDefinition().Equals(typeof(Nullable<>)))
                 return Reflection.Instance.GetGenericArguments(conversionType)[0];
 
             return conversionType;
@@ -346,8 +379,11 @@ namespace fastJSON
             }
         }
 
-        internal object FastCreateInstance(Type objtype)
+        internal object FastCreateInstance(System.Type objtype)
         {
+#if ENABLE_IL2CPP || UNITY_WSA
+            return Activator.CreateInstance(objtype);
+#else
             try
             {
                 CreateObject c = null;
@@ -387,10 +423,18 @@ namespace fastJSON
                 throw new Exception(string.Format("Failed to fast create instance for type '{0}' from assembly '{1}'",
                     objtype.FullName, objtype.AssemblyQualifiedName), exc);
             }
+#endif
         }
 
         internal static GenericSetter CreateSetField(Type type, FieldInfo fieldInfo)
         {
+#if ENABLE_IL2CPP || UNITY_WSA
+            return (obj, value) =>
+            {
+                fieldInfo.SetValue(obj, value);
+                return obj;
+            };
+#else
             Type[] arguments = new Type[2];
             arguments[0] = arguments[1] = typeof(object);
 
@@ -426,8 +470,10 @@ namespace fastJSON
                 il.Emit(OpCodes.Ret);
             }
             return (GenericSetter)dynamicSet.CreateDelegate(typeof(GenericSetter));
+#endif
         }
 
+#if !ENABLE_IL2CPP && !UNITY_WSA
         internal static FieldInfo GetGetterBackingField(PropertyInfo autoProperty)
         {
             var getMethod = autoProperty.GetGetMethod();
@@ -441,7 +487,8 @@ namespace fastJSON
             {
                 // Read and parse the OpCode (it can be 1 or 2 bytes in size).
                 byte code = byteCode[pos++];
-                if (!(TryGetOpCode(code, out var opCode) || pos < byteCode.Length && TryGetOpCode((short)(code * 0x100 + byteCode[pos++]), out opCode)))
+                OpCode opCode;
+                if (!(TryGetOpCode(code, out opCode) || pos < byteCode.Length && TryGetOpCode((short)(code * 0x100 + byteCode[pos++]), out opCode)))
                     throw new NotSupportedException("Unknown IL code detected.");
                 // If it is a LdFld, read its operand, parse it to a FieldInfo and return it.
                 if (opCode == OpCodes.Ldfld && opCode.OperandType == OperandType.InlineField && pos + sizeof(int) <= byteCode.Length)
@@ -466,9 +513,17 @@ namespace fastJSON
             }
             return null;
         }
+#endif
 
         internal static GenericSetter CreateSetMethod(Type type, PropertyInfo propertyInfo, bool ShowReadOnlyProperties)
         {
+#if ENABLE_IL2CPP || UNITY_WSA
+            return (obj, value) =>
+            {
+                propertyInfo.SetValue(obj, value);
+                return obj;
+            };
+#else
             MethodInfo setMethod = propertyInfo.GetSetMethod(ShowReadOnlyProperties);
             if (setMethod == null)
             {
@@ -529,10 +584,14 @@ namespace fastJSON
             il.Emit(OpCodes.Ret);
 
             return (GenericSetter)setter.CreateDelegate(typeof(GenericSetter));
+#endif
         }
 
         internal static GenericGetter CreateGetField(Type type, FieldInfo fieldInfo)
         {
+#if ENABLE_IL2CPP || UNITY_WSA
+            return (obj) => fieldInfo.GetValue(obj);
+#else
             DynamicMethod dynamicGet = new DynamicMethod("_", typeof(object), new Type[] { typeof(object) }, type);
 
             ILGenerator il = dynamicGet.GetILGenerator();
@@ -559,10 +618,14 @@ namespace fastJSON
             il.Emit(OpCodes.Ret);
 
             return (GenericGetter)dynamicGet.CreateDelegate(typeof(GenericGetter));
+#endif
         }
 
         internal static GenericGetter CreateGetMethod(Type type, PropertyInfo propertyInfo)
         {
+#if ENABLE_IL2CPP || UNITY_WSA
+            return (obj) => propertyInfo.GetMethod.Invoke(obj, null);
+#else
             MethodInfo getMethod = propertyInfo.GetGetMethod();
             if (getMethod == null)
                 return null;
@@ -600,6 +663,7 @@ namespace fastJSON
             il.Emit(OpCodes.Ret);
 
             return (GenericGetter)getter.CreateDelegate(typeof(GenericGetter));
+#endif
         }
 
         internal Getters[] GetGetters(Type type, bool ShowReadOnlyProperties, List<Type> IgnoreAttributes)

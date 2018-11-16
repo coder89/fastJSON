@@ -6,6 +6,7 @@ using System.Data;
 #endif
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Collections.Specialized;
 
@@ -119,12 +120,17 @@ namespace fastJSON
 #if NET4
             else if (_params.KVStyleStringDictionary == false &&
                 obj is IEnumerable<KeyValuePair<string, object>>)
-
                 WriteStringDictionary((IEnumerable<KeyValuePair<string, object>>)obj);
+
+            else if (obj is DynamicJson)
+                if (((DynamicJson)obj).IsObject)
+                    WriteStringDictionary(((DynamicJson)obj).AsDictionary());
+                else
+                    WriteArray(((DynamicJson)obj).AsCollection());
 #endif
 
             else if (_params.KVStyleStringDictionary == false && obj is IDictionary &&
-                obj.GetType().IsGenericType && obj.GetType().GetGenericArguments()[0] == typeof(string))
+                obj.GetType().Convert().IsGenericType && obj.GetType().GetGenericArguments()[0] == typeof(string))
 
                 WriteStringDictionary((IDictionary)obj);
             else if (obj is IDictionary)

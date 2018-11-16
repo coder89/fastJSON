@@ -8,6 +8,12 @@ using System.Globalization;
 using System.IO;
 using System.Collections.Specialized;
 
+#if UNITY_WSA
+using TypeR = System.Reflection.TypeInfo;
+#else
+using TypeR = System.Type;
+#endif
+
 namespace fastJSON
 {
     public delegate string Serialize(object data);
@@ -51,7 +57,7 @@ namespace fastJSON
         /// <summary>
         /// Enable fastJSON extensions $types, $type, $map (default = True)
         /// </summary>
-        public bool UseExtensions = true;
+        public bool UseExtensions = false;
         /// <summary>
         /// Use escaped unicode i.e. \uXXXX format for non ASCII characters (default = True)
         /// </summary>
@@ -191,8 +197,9 @@ namespace fastJSON
             if (obj == null)
                 return "null";
 
-            if (obj.GetType().IsGenericType)
-                t = Reflection.Instance.GetGenericTypeDefinition(obj.GetType());
+            var objT = obj.GetType();
+            if (objT.Convert().IsGenericType)
+                t = Reflection.Instance.GetGenericTypeDefinition(objT);
             if (t == typeof(Dictionary<,>) || t == typeof(List<>))
                 param.UsingGlobalTypes = false;
 
@@ -281,6 +288,32 @@ namespace fastJSON
         {
             return new deserializer(par).ToObject(json, type);
         }
+#if NET4
+        /// <summary>
+        /// Create an object of type from the dynamic json instance
+        /// </summary>
+        /// <param name="json"></param>
+        /// <param name="type"></param>
+        /// <param name="par"></param>
+        /// <returns></returns>
+        public static T ToObject<T>(DynamicJson json)
+        {
+            var deserializer = new deserializer(Parameters);
+            var o = deserializer.ToObject(json.AsCollection(), typeof(T), null);
+            return deserializer.ToObject<T>(o, typeof(T));
+        }
+        /// <summary>
+        /// Create an object of type from the dynamic json instance
+        /// </summary>
+        /// <param name="json"></param>
+        /// <param name="type"></param>
+        /// <param name="par"></param>
+        /// <returns></returns>
+        public static object ToObject(DynamicJson json, Type type)
+        {
+            return new deserializer(Parameters).ToObject(json.AsCollection(), type, null);
+        }
+#endif
         /// <summary>
         /// Fill a given object with the json represenation
         /// </summary>
@@ -394,6 +427,11 @@ namespace fastJSON
             Type t = typeof(T);
             var o = ToObject(json, t);
 
+            return this.ToObject<T>(o, t);
+        }
+
+        internal T ToObject<T>(object o, Type t)
+        {
             if (t.IsArray)
             {
                 if ((o as ICollection).Count == 0) // edge case for "[]" -> T[]
@@ -418,13 +456,18 @@ namespace fastJSON
         {
             //_params.FixValues();
             Type t = null;
-            if (type != null && type.IsGenericType)
+            if (type != null && type.Convert().IsGenericType)
                 t = Reflection.Instance.GetGenericTypeDefinition(type);
             _usingglobals = _params.UsingGlobalTypes;
             if (t == typeof(Dictionary<,>) || t == typeof(List<>))
                 _usingglobals = false;
 
             object o = new JsonParser(json, _params.AllowNonQuotedKeys).Decode();
+            return this.ToObject(o, type, t);
+        }
+
+        internal object ToObject(object o, Type type, Type t)
+        {
             if (o == null)
                 return null;
 #if !SILVERLIGHT
@@ -513,7 +556,7 @@ namespace fastJSON
             else if (conversionType == typeof(string))
                 return (string)value;
 
-            else if (conversionType.IsEnum)
+            else if (conversionType.Convert().IsEnum)
                 return CreateEnum(conversionType, value);
 
             else if (conversionType == typeof(DateTime))
@@ -619,8 +662,8 @@ namespace fastJSON
 
         private bool IsNullable(Type t)
         {
-            if (!t.IsGenericType) return false;
-            Type g = t.GetGenericTypeDefinition();
+            if (!t.Convert().IsGenericType) return false;
+            var g = t.GetGenericTypeDefinition();
             return (g.Equals(typeof(Nullable<>)));
         }
 
@@ -764,9 +807,11 @@ namespace fastJSON
             object o = input;
             if (o == null)
             {
+#if !UNITY_WSA
                 if (_params.ParametricConstructorOverride)
                     o = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(type);
                 else
+#endif
                     o = Reflection.Instance.FastCreateInstance(type);
             }
             int circount = 0;
@@ -839,6 +884,7 @@ namespace fastJSON
                             case myPropInfoType.NameValue: oset = CreateNV((Dictionary<string, object>)v); break;
                             case myPropInfoType.StringDictionary: oset = CreateSD((Dictionary<string, object>)v); break;
                             case myPropInfoType.Custom: oset = Reflection.Instance.CreateCustom((string)v, pi.pt); break;
+                            case myPropInfoType.Dynamic: oset = new DynamicJson(v); break;
                             default:
                                 {
                                     if (pi.IsGenericType && pi.IsValueType == false && v is List<object>)
@@ -960,7 +1006,7 @@ namespace fastJSON
         private object CreateEnum(Type pt, object v)
         {
             // FEATURE : optimize create enum
-#if !SILVERLIGHT
+#if !SILVERLIGHT || UNITY_EDITOR || UNITY_ANDROID || UNITY_WSA || UNITY_IOS
             return Enum.Parse(pt, v.ToString(), true);
 #else
             return Enum.Parse(pt, v, true);
@@ -1049,7 +1095,7 @@ namespace fastJSON
 
                     else if (ob is List<object>)
                     {
-                        if (bt.IsGenericType)
+                        if (bt.Convert().IsGenericType)
                             col.Add((List<object>)ob);//).ToArray());
                         else
                             col.Add(((List<object>)ob).ToArray());
